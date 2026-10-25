@@ -73,6 +73,30 @@ or in the `SEC_USER_AGENT` environment variable.
 | `/trader-analyst` | Earnings Analyst | Reads earnings reports and sums up what changed. |
 | `/trader-pelosi` | Pelosi Tracker | Reads Congress's stock-trade disclosures the minute they are filed. |
 
+## The paper simulator (this fork)
+
+`/trader-sim` is a twelfth skill, added in this fork: a daily learning loop
+that never places an order. After every close it archives the session's free
+5-minute bars, replays the opening-range breakout on them bar by bar (entry
+on the bar after the signal, slippage, stops that fill past their price on a
+gap), logs every simulated trade to `trader/sim/trades.csv` and writes a
+review of what went well and what went wrong to `trader/sim/reviews/`. Once a
+week `propose` tries one-knob changes to `trader/sim/strategy.json` and keeps
+one only if it also wins on the last third of the archive, the days it was
+not chosen on. A person adopts it, and every version is then forward-tested
+on new days.
+
+```bash
+python3 trader-sim/sim.py backfill        # once: the last 60 days of bars
+python3 trader-sim/sim.py day             # after the close: simulate + review today
+python3 trader-sim/sim.py propose         # weekly: a change only if it holds up out of sample
+```
+
+`.github/workflows/sim-daily.yml` runs `day` every weekday after the close
+on GitHub Actions, commits the archive, the log and the review, and on
+Fridays opens a pull request when a proposal passes. See
+[trader-sim/SKILL.md](trader-sim/SKILL.md) for the rules and the limits.
+
 ## How to use it
 
 Everything lands in a `trader/` folder in your project, and each skill reads
@@ -210,6 +234,7 @@ trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, facts.py, metrics.example.json
 trader-pelosi/      SKILL.md, ptr.py
+trader-sim/         SKILL.md, sim.py, strategy.default.json, universe.txt
 tests/              unittest suite + offline fixtures
 ```
 

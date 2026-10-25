@@ -1,0 +1,82 @@
+# The daily paper simulation: after every close, archive the session's free 5-minute bars,
+# simulate the strategy, log the trades and write the review. On Fridays, run propose and,
+# when a change passes the test days, open a pull request for a person to merge or close.
+# Nothing here places an order: there are no broker keys in this workflow.
+name: sim-daily
+
+on:
+  schedule:
+    - cron: "25 21 * * 1-5"   # 21:25 UTC: 5:25 PM EDT / 4:25 PM EST, after the close
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Session to simulate (YYYY-MM-DD, New York). Empty = today."
+        required: false
+      propose:
+        description: "Also run propose"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sim-daily
+  cancel-in-progress: false
+
+jobs:
+  day:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tests
+        run: python3 -m unittest discover -s tests
+      - name: Backfill the archive on the first run
+        run: |
+          if [ ! -d trader/sim/bars ] || [ -z "$(ls -A trader/sim/bars 2>/dev/null)" ]; then
+            python3 trader-sim/sim.py backfill
+          fi
+      - name: Simulate and review the day
+        run: |
+          if [ -n "${{ inputs.date }}" ]; then
+            python3 trader-sim/sim.py day --date "${{ inputs.date }}"
+          else
+            python3 trader-sim/sim.py day
+          fi
+      - name: Propose (Fridays, or on request)
+        id: propose
+        if: ${{ inputs.propose || github.event_name == 'schedule' }}
+        run: |
+          if [ "${{ inputs.propose }}" != "true" ] && [ "$(date -u +%u)" != "5" ]; then
+            echo "not Friday"; exit 0
+          fi
+          python3 trader-sim/sim.py propose --quiet || exit 0
+          f=$(ls -t trader/sim/proposals/*.json | head -1)
+          if python3 -c "import json,sys; sys.exit(0 if json.load(open('$f'))['passes'] else 1)"; then
+            echo "file=$f" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Commit the log, the archive and the review
+        run: |
+          git config user.name "sim-daily"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add trader/sim
+          git diff --cached --quiet || git commit -m "sim: $(ls -t trader/sim/reviews | head -1 | sed 's/.md$//')"
+          git push
+      - name: Open a pull request for a passing proposal
+        if: steps.propose.outputs.file != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          f="${{ steps.propose.outputs.file }}"
+          stamp=$(basename "$f" .json)
+          git switch -c "sim/proposal-$stamp"
+          python3 trader-sim/sim.py apply "$f"
+          git add trader/sim
+          git commit -m "sim: adopt proposal $stamp"
+          git push -u origin "sim/proposal-$stamp"
+          gh pr create --title "sim: strategy proposal $stamp" --body-file "${f%.json}.md" \
+            || echo "Could not open the pull request: allow Actions to create pull requests in Settings > Actions > General."
